@@ -9,11 +9,10 @@ load_dotenv()
 
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "nyc-taxi-stream")
 BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-PARQUET_PATH = os.getenv(
-    "PARQUET_PATH",
-    "/Users/parthalagh/MAIN/nyc-taxi-aws/data/raw/yellow_tripdata_2023-01.parquet",
-)
-SLEEP_SECONDS = 0.05
+PARQUET_PATH = os.getenv("PARQUET_PATH")
+if not PARQUET_PATH:
+    raise RuntimeError("PARQUET_PATH is not set. Copy .env.example to .env and set your parquet file path.")
+SLEEP_SECONDS = float(os.getenv("PRODUCER_SLEEP_SECONDS", "0.05"))
 
 
 def load_and_clean_data(parquet_path: str) -> pd.DataFrame:
@@ -39,10 +38,11 @@ def load_and_clean_data(parquet_path: str) -> pd.DataFrame:
     df["tpep_pickup_datetime"] = pd.to_datetime(df["tpep_pickup_datetime"])
     df = df.sort_values(by="tpep_pickup_datetime").reset_index(drop=True)
 
-    # Optional: filter out corrupted 2008/2009 timestamps often present in raw NYC TLC files
+    # Filter out corrupted timestamps — enforce strict January 2023 date range
     df = df[df["tpep_pickup_datetime"] >= "2023-01-01"]
+    df = df[df["tpep_pickup_datetime"] < "2023-02-01"]
 
-    print(f"Loaded {len(df):,} valid trips Ready to stream.")
+    print(f"Loaded {len(df):,} valid trips. Ready to stream.")
     return df
 
 

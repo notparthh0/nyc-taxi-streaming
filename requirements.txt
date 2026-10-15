@@ -2,5 +2,6 @@ kafka-python-ng
 pandas
 pyarrow
 python-dotenv
-google-generativeai
+google-genai
 streamlit
+streamlit-autorefresh
