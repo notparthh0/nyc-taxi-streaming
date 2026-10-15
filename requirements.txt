@@ -1,0 +1,6 @@
+kafka-python-ng
+pandas
+pyarrow
+python-dotenv
+google-generativeai
+streamlit
