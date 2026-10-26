@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>NYC Taxi Streaming — Runtime Architecture</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --producer: #f78166;
+    --kafka: #d2a8ff;
+    --processing: #79c0ff;
+    --ai: #56d364;
+    --store: #ffa657;
+    --dashboard: #58a6ff;
+    --test: #e3b341;
+    --arrow: #484f58;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, monospace;
+    min-height: 100vh;
+    padding: 40px 24px;
+  }
+  header {
+    text-align: center;
+    margin-bottom: 48px;
+  }
+  header h1 {
+    font-size: 28px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: 8px;
+  }
+  header p {
+    color: var(--muted);
+    font-size: 13px;
+    font-family: monospace;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    gap: 32px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  .pipeline { display: flex; flex-direction: column; align-items: center; gap: 0; }
+
+  /* NODE */
+  .node {
+    width: 100%;
+    max-width: 580px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 24px;
+    position: relative;
+    transition: border-color .2s;
+  }
+  .node:hover { border-color: #58a6ff55; }
+  .node-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 10px;
+  }
+  .node-icon {
+    width: 36px; height: 36px;
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 18px;
+    flex-shrink: 0;
+  }
+  .node-title { font-size: 15px; font-weight: 600; }
+  .node-file { font-size: 11px; color: var(--muted); font-family: monospace; margin-top: 1px; }
+  .node-desc { font-size: 13px; color: var(--muted); line-height: 1.6; margin-bottom: 12px; }
+  .badges { display: flex; flex-wrap: wrap; gap: 6px; }
+  .badge {
+    font-family: monospace;
+    font-size: 11px;
+    padding: 3px 8px;
+    border-radius: 20px;
+    border: 1px solid;
+    white-space: nowrap;
+  }
+
+  /* COLORS */
+  .c-producer .node { border-left: 3px solid var(--producer); }
+  .c-producer .node-icon { background: #f7816622; }
+  .c-producer .node-title { color: var(--producer); }
+  .c-producer .badge { color: var(--producer); border-color: #f7816633; background: #f7816611; }
+
+  .c-kafka .node { border-left: 3px solid var(--kafka); }
+  .c-kafka .node-icon { background: #d2a8ff22; }
+  .c-kafka .node-title { color: var(--kafka); }
+  .c-kafka .badge { color: var(--kafka); border-color: #d2a8ff33; background: #d2a8ff11; }
+
+  .c-processing .node { border-left: 3px solid var(--processing); }
+  .c-processing .node-icon { background: #79c0ff22; }
+  .c-processing .node-title { color: var(--processing); }
+  .c-processing .badge { color: var(--processing); border-color: #79c0ff33; background: #79c0ff11; }
+
+  .c-anomaly .node { border-left: 3px solid var(--processing); }
+  .c-anomaly .node-icon { background: #79c0ff22; }
+  .c-anomaly .node-title { color: var(--processing); }
+  .c-anomaly .badge { color: var(--processing); border-color: #79c0ff33; background: #79c0ff11; }
+
+  .c-ai .node { border-left: 3px solid var(--ai); }
+  .c-ai .node-icon { background: #56d36422; }
+  .c-ai .node-title { color: var(--ai); }
+  .c-ai .badge { color: var(--ai); border-color: #56d36433; background: #56d36411; }
+
+  .c-store .node { border-left: 3px solid var(--store); }
+  .c-store .node-icon { background: #ffa65722; }
+  .c-store .node-title { color: var(--store); }
+  .c-store .badge { color: var(--store); border-color: #ffa65733; background: #ffa65711; }
+
+  .c-dashboard .node { border-left: 3px solid var(--dashboard); }
+  .c-dashboard .node-icon { background: #58a6ff22; }
+  .c-dashboard .node-title { color: var(--dashboard); }
+  .c-dashboard .badge { color: var(--dashboard); border-color: #58a6ff33; background: #58a6ff11; }
+
+  /* ARROW */
+  .arrow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    width: 100%;
+    max-width: 580px;
+    padding: 4px 0;
+  }
+  .arrow-line {
+    width: 2px;
+    height: 24px;
+    background: var(--arrow);
+  }
+  .arrow-label {
+    font-size: 10px;
+    color: var(--muted);
+    font-family: monospace;
+    background: var(--bg);
+    padding: 2px 8px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+  }
+  .arrow-head {
+    width: 0; height: 0;
+    border-left: 6px solid transparent;
+    border-right: 6px solid transparent;
+    border-top: 8px solid var(--arrow);
+  }
+
+  /* SIDEBAR */
+  .sidebar { display: flex; flex-direction: column; gap: 20px; padding-top: 8px; }
+  .sidebar-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px;
+  }
+  .sidebar-card h3 {
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .sidebar-card p { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 10px; }
+
+  .test-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    font-family: monospace;
+    color: var(--muted);
+    padding: 4px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .test-item:last-child { border-bottom: none; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ai); flex-shrink: 0; }
+  .dot.warn { background: var(--test); }
+
+  .metric { display: flex; justify-content: space-between; font-size: 12px; padding: 5px 0; border-bottom: 1px solid var(--border); }
+  .metric:last-child { border-bottom: none; }
+  .metric-val { font-family: monospace; color: var(--text); }
+
+  footer {
+    text-align: center;
+    margin-top: 48px;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: monospace;
+  }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; margin-bottom: 32px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .legend-dot { width: 10px; height: 10px; border-radius: 2px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>NYC Taxi Streaming Architecture</h1>
+  <p>Full runtime data flow — producer → Kafka → consumer → 5-min windows → Gemini → dashboard</p>
+</header>
+
+<div class="legend">
+  <div class="legend-item"><div class="legend-dot" style="background:var(--producer)"></div> Ingestion</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--kafka)"></div> Transport</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--processing)"></div> Processing</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--ai)"></div> AI / LLM</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--store)"></div> State</div>
+  <div class="legend-item"><div class="legend-dot" style="background:var(--dashboard)"></div> Presentation</div>
+</div>
+
+<div class="layout">
+  <div class="pipeline">
+
+    <!-- PRODUCER -->
+    <div class="c-producer" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">📡</div>
+          <div>
+            <div class="node-title">01 — Kafka Producer</div>
+            <div class="node-file">producer.py</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Reads NYC TLC Yellow Taxi Parquet data, validates and sorts records chronologically, 
+          then streams JSON-serialized trip events to the Kafka topic at a configurable rate 
+          (PRODUCER_SLEEP_SECONDS from env).
+        </div>
+        <div class="badges">
+          <span class="badge">python</span>
+          <span class="badge">kafka-python-ng</span>
+          <span class="badge">pandas</span>
+          <span class="badge">parquet</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">JSON events → topic: nyc-taxi-stream</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- KAFKA -->
+    <div class="c-kafka" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">⚡</div>
+          <div>
+            <div class="node-title">02 — Kafka Topic</div>
+            <div class="node-file">docker-compose.yml · nyc-taxi-stream</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Distributed message bus running via Docker Compose. Producer sends JSON records 
+          containing tpep_pickup_datetime, PULocationID, fare_amount, trip_distance, 
+          and passenger_count. Validated on ingestion before queuing.
+        </div>
+        <div class="badges">
+          <span class="badge">Confluent 7.5.0</span>
+          <span class="badge">PLAINTEXT</span>
+          <span class="badge">Docker</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">poll() · batch consume</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- CONSUMER -->
+    <div class="c-processing" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">⚙️</div>
+          <div>
+            <div class="node-title">03 — Stream Consumer</div>
+            <div class="node-file">consumer.py</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Subscribes to the Kafka topic, deserializes JSON messages, validates required fields, 
+          and routes events into 5-minute tumbling windows bucketed by pickup zone (PULocationID). 
+          Maintains a rolling 12-window history per zone for statistical baseline.
+        </div>
+        <div class="badges">
+          <span class="badge">python</span>
+          <span class="badge">statistics</span>
+          <span class="badge">kafka-python-ng</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">window close → aggregated metrics per zone</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- WINDOW ENGINE -->
+    <div class="c-processing" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">🪟</div>
+          <div>
+            <div class="node-title">04 — 5-Min Tumbling Window Engine</div>
+            <div class="node-file">consumer.py · WindowAggregator</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Groups events into non-overlapping 5-minute windows. On window close, computes 
+          avg_fare, trip_count, avg_distance, avg_passengers per zone. Flushes final window 
+          on consumer shutdown to prevent data loss.
+        </div>
+        <div class="badges">
+          <span class="badge">tumbling windows</span>
+          <span class="badge">zone aggregation</span>
+          <span class="badge">final flush</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">count &gt; mean + 2σ → anomaly flagged</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- ANOMALY DETECTOR -->
+    <div class="c-anomaly" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">🔍</div>
+          <div>
+            <div class="node-title">05 — Anomaly Detector</div>
+            <div class="node-file">consumer.py · detect_anomaly()</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Applies a statistical threshold: flags a zone as anomalous when its trip_count 
+          exceeds mean + 2 standard deviations across the rolling 12-window history. 
+          Triggers LLM diagnosis on positive detection.
+        </div>
+        <div class="badges">
+          <span class="badge">mean + 2σ</span>
+          <span class="badge">rolling 12-window</span>
+          <span class="badge">per-zone baseline</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">anomaly context → Gemini API call</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- GEMINI -->
+    <div class="c-ai" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">🤖</div>
+          <div>
+            <div class="node-title">06 — Gemini LLM Diagnosis</div>
+            <div class="node-file">consumer.py · google-genai · gemini-2.5-flash</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          On anomaly detection, sends zone metrics + historical context to Gemini 2.5 Flash 
+          via google-genai SDK. Returns natural-language root-cause diagnosis 
+          (time-of-day patterns, zone characteristics, demand magnitude analysis).
+        </div>
+        <div class="badges">
+          <span class="badge">google-genai</span>
+          <span class="badge">gemini-2.5-flash</span>
+          <span class="badge">prompt engineering</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">diagnosis stored · capped at 100 entries</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- STORE -->
+    <div class="c-store" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">🗄️</div>
+          <div>
+            <div class="node-title">07 — In-Memory State Store</div>
+            <div class="node-file">consumer.py · shared state</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Holds live window results (all zones, current window) and the last 100 anomaly 
+          records with LLM diagnoses. Capped to prevent unbounded memory growth. 
+          Shared between consumer thread and Streamlit dashboard via thread-safe access.
+        </div>
+        <div class="badges">
+          <span class="badge">in-memory</span>
+          <span class="badge">capped at 100</span>
+          <span class="badge">thread-safe</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="arrow">
+      <div class="arrow-line"></div>
+      <div class="arrow-label">reads live state · auto-refresh 5–60s</div>
+      <div class="arrow-line"></div>
+      <div class="arrow-head"></div>
+    </div>
+
+    <!-- DASHBOARD -->
+    <div class="c-dashboard" style="width:100%;max-width:580px">
+      <div class="node">
+        <div class="node-header">
+          <div class="node-icon">📊</div>
+          <div>
+            <div class="node-title">08 — Streamlit Dashboard</div>
+            <div class="node-file">dashboard.py</div>
+          </div>
+        </div>
+        <div class="node-desc">
+          Real-time monitoring UI: live metrics cards (total trips, active zones, anomalies), 
+          top-10 zone bar chart, anomaly review table with LLM diagnosis column, and a 
+          refresh-rate slider (5–60s). Reads directly from the shared in-memory store.
+        </div>
+        <div class="badges">
+          <span class="badge">streamlit</span>
+          <span class="badge">streamlit-autorefresh</span>
+          <span class="badge">altair</span>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /pipeline -->
+
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+
+    <!-- TEST SUITE -->
+    <div class="sidebar-card" style="border-left: 3px solid var(--test)">
+      <h3 style="color:var(--test)">🧪 Test Suite <span style="color:var(--muted);font-weight:400">(14/14 passing)</span></h3>
+      <p>Pytest unit tests covering all consumer logic.</p>
+      <div class="test-item"><div class="dot"></div>test_window_aggregation</div>
+      <div class="test-item"><div class="dot"></div>test_anomaly_detection</div>
+      <div class="test-item"><div class="dot"></div>test_message_validation</div>
+      <div class="test-item"><div class="dot"></div>test_final_window_flush</div>
+      <div class="test-item"><div class="dot"></div>test_anomaly_cap_at_100</div>
+      <div class="test-item"><div class="dot"></div>test_gemini_diagnosis_call</div>
+      <div class="test-item"><div class="dot" style="background:var(--test)"></div>+ 8 more tests</div>
+    </div>
+
+    <!-- STACK -->
+    <div class="sidebar-card">
+      <h3>🛠️ Full Stack</h3>
+      <div class="metric"><span>Streaming</span><span class="metric-val">Apache Kafka</span></div>
+      <div class="metric"><span>LLM</span><span class="metric-val">Gemini 2.5 Flash</span></div>
+      <div class="metric"><span>SDK</span><span class="metric-val">google-genai</span></div>
+      <div class="metric"><span>Dashboard</span><span class="metric-val">Streamlit</span></div>
+      <div class="metric"><span>Testing</span><span class="metric-val">Pytest</span></div>
+      <div class="metric"><span>Infra</span><span class="metric-val">Docker Compose</span></div>
+    </div>
+
+    <!-- METRICS -->
+    <div class="sidebar-card">
+      <h3>📈 Pipeline Stats</h3>
+      <div class="metric"><span>Window size</span><span class="metric-val">5 min</span></div>
+      <div class="metric"><span>History depth</span><span class="metric-val">12 windows</span></div>
+      <div class="metric"><span>Anomaly threshold</span><span class="metric-val">μ + 2σ</span></div>
+      <div class="metric"><span>Max anomaly store</span><span class="metric-val">100 entries</span></div>
+      <div class="metric"><span>Dashboard refresh</span><span class="metric-val">5–60s</span></div>
+      <div class="metric"><span>Tests passing</span><span class="metric-val">14 / 14</span></div>
+    </div>
+
+    <!-- REPO -->
+    <div class="sidebar-card">
+      <h3>🔗 Repository</h3>
+      <p>github.com/notparthh0/nyc-taxi-streaming</p>
+      <div class="metric"><span>License</span><span class="metric-val">MIT</span></div>
+      <div class="metric"><span>Language</span><span class="metric-val">Python</span></div>
+    </div>
+
+  </div>
+</div>
+
+<footer>
+  Built from /Users/parthalagh/MAIN/nyc-taxi-streaming — producer · consumer · dashboard · docker-compose · 14 passing tests
+</footer>
+
+</body>
+</html>
