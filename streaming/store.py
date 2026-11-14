@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS anomalies (
     baseline_mean  REAL    NOT NULL,
     baseline_std   REAL    NOT NULL,
     threshold      REAL    NOT NULL,
+    detector       TEXT,
     explanation    TEXT,
     detected_at_ms INTEGER NOT NULL,
     PRIMARY KEY (window_start, zone)
@@ -126,13 +127,15 @@ class Store:
               processed_at_ms, batch_id) for r in rows],
         )
 
-    def upsert_anomalies(self, window_start: str, spikes: List[Spike], explanations: Dict[int, str]):
+    def upsert_anomalies(self, window_start: str, spikes: List[Spike], explanations: Dict[int, str],
+                         detector: str = "rolling_hour"):
         self.conn.executemany(
-            "INSERT INTO anomalies (window_start, zone, trips, baseline_mean, baseline_std, threshold, explanation, detected_at_ms) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+            "INSERT INTO anomalies (window_start, zone, trips, baseline_mean, baseline_std, threshold, detector, "
+            "explanation, detected_at_ms) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(window_start, zone) DO UPDATE SET trips = excluded.trips, baseline_mean = excluded.baseline_mean, "
-            "baseline_std = excluded.baseline_std, threshold = excluded.threshold, explanation = excluded.explanation",
-            [(window_start, s.zone, s.trips, s.baseline_mean, s.baseline_std, s.threshold,
+            "baseline_std = excluded.baseline_std, threshold = excluded.threshold, detector = excluded.detector, "
+            "explanation = excluded.explanation",
+            [(window_start, s.zone, s.trips, s.baseline_mean, s.baseline_std, s.threshold, detector,
               explanations.get(s.zone), now_ms()) for s in spikes],
         )
 

@@ -14,7 +14,12 @@ How it handles the hard parts of streaming:
   * Each window is emitted once, when it is final (append mode).
   * Restarts: Kafka offsets live in the checkpoint; results are written with the
     micro-batch id in one SQLite transaction, so a replayed batch is never
-    applied twice (see streaming/store.py). Net effect: exactly-once results.
+    applied twice (see streaming/store.py), and MERGEd into the Iceberg
+    lakehouse keyed on (window_start, zone), so a replay changes nothing there
+    either. Net effect: exactly-once results in both sinks.
+  * Detection: by default each zone is compared with its seasonal profile (same
+    weekday and 5-minute slot over the previous 4 weeks), read from the batch
+    pipeline's Iceberg table; --detector rolling uses the v1 previous-hour rule.
 """
 
 import argparse
@@ -22,6 +27,7 @@ import json
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,8 +39,11 @@ from pyspark.sql import functions as F  # noqa: E402
 from pyspark.sql.types import (DoubleType, IntegerType, LongType, StringType,  # noqa: E402
                                StructField, StructType)
 
+from streaming.lakehouse import (ICEBERG_PACKAGE, SPIKES_TABLE, WINDOWS_TABLE,  # noqa: E402
+                                  ensure_tables, merge_rows, warehouse_path, with_iceberg)
 from streaming.processor import process_batch, write_dashboard_snapshots  # noqa: E402
-from streaming.store import Store  # noqa: E402
+from streaming.seasonal import RollingDetector, SeasonalDetector, iceberg_source  # noqa: E402
+from streaming.store import TS_FORMAT, Store  # noqa: E402
 
 KAFKA_PACKAGE = "org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.1"
 DATA_DIR = ROOT / "data"
@@ -50,13 +59,40 @@ EVENT_SCHEMA = StructType([
 ])
 
 
-def build_spark(app_name: str = "nyc-taxi-stream", with_kafka: bool = True) -> SparkSession:
+def build_spark(app_name: str = "nyc-taxi-stream", with_kafka: bool = True, with_lakehouse: bool = True,
+                warehouse: Path = None) -> SparkSession:
     builder = (SparkSession.builder.appName(app_name).master("local[*]")
                .config("spark.sql.session.timeZone", "UTC")
                .config("spark.sql.shuffle.partitions", "4"))
-    if with_kafka:
-        builder = builder.config("spark.jars.packages", KAFKA_PACKAGE)
+    packages = ([KAFKA_PACKAGE] if with_kafka else []) + ([ICEBERG_PACKAGE] if with_lakehouse else [])
+    if packages:
+        builder = builder.config("spark.jars.packages", ",".join(packages))
+    if with_lakehouse:
+        builder = with_iceberg(builder, warehouse)
     return builder.getOrCreate()
+
+
+def sync_to_iceberg(spark: SparkSession, store: Store, window_starts) -> dict:
+    """MERGE this batch's windows and spikes from SQLite into the Iceberg lakehouse.
+    Runs even when SQLite skipped a replayed batch, so a crash between the two sinks heals itself."""
+    if not window_starts:
+        return {"iceberg_windows": 0, "iceberg_spikes": 0}
+    marks = ",".join("?" * len(window_starts))
+    as_ts = lambda s: datetime.strptime(s, TS_FORMAT)  # noqa: E731
+    windows = [(as_ts(w), z, t, f, lp, pa, b) for w, z, t, f, lp, pa, b in store.conn.execute(
+        f"SELECT window_start, zone, trips, avg_fare, last_produced_ms, processed_at_ms, batch_id "
+        f"FROM zone_windows WHERE window_start IN ({marks})", list(window_starts))]
+    spikes = [(as_ts(w), z, t, m, s, th, d, e, at) for w, z, t, m, s, th, d, e, at in store.conn.execute(
+        f"SELECT window_start, zone, trips, baseline_mean, baseline_std, threshold, detector, explanation, "
+        f"detected_at_ms FROM anomalies WHERE window_start IN ({marks})", list(window_starts))]
+    n_windows = merge_rows(spark, WINDOWS_TABLE, windows,
+                           "window_start timestamp_ntz, zone int, trips int, avg_fare double, "
+                           "last_produced_ms bigint, processed_at_ms bigint, batch_id bigint")
+    n_spikes = merge_rows(spark, SPIKES_TABLE, spikes,
+                          "window_start timestamp_ntz, zone int, trips int, baseline_mean double, "
+                          "baseline_std double, threshold double, detector string, explanation string, "
+                          "detected_at_ms bigint")
+    return {"iceberg_windows": n_windows, "iceberg_spikes": n_spikes}
 
 
 def windowed_counts(kafka_df: DataFrame, watermark: str = "10 minutes") -> DataFrame:
@@ -80,10 +116,14 @@ def windowed_counts(kafka_df: DataFrame, watermark: str = "10 minutes") -> DataF
                     "zone", "trips", "avg_fare", "last_produced_ms"))
 
 
-def make_batch_handler(store: Store, data_dir: Path, k: float, min_trips: int, max_llm_calls: int):
+def make_batch_handler(store: Store, data_dir: Path, k: float, min_trips: int, max_llm_calls: int,
+                       detector=None, lakehouse: bool = True):
     def handle(batch_df: DataFrame, batch_id: int) -> None:
         rows = [row.asDict() for row in batch_df.collect()]
-        result = process_batch(store, rows, batch_id, k=k, min_trips=min_trips, max_llm_calls=max_llm_calls)
+        result = process_batch(store, rows, batch_id, k=k, min_trips=min_trips, max_llm_calls=max_llm_calls,
+                               detector=detector)
+        if lakehouse:
+            result.update(sync_to_iceberg(batch_df.sparkSession, store, sorted({r["window_start"] for r in rows})))
         write_dashboard_snapshots(store, data_dir)
         if rows or result.get("skipped"):
             print(f"[batch {batch_id}] {json.dumps(result)}", flush=True)
@@ -97,8 +137,11 @@ def main(argv=None) -> int:
     parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
     parser.add_argument("--watermark", default="10 minutes")
     parser.add_argument("--trigger-seconds", type=int, default=2)
-    parser.add_argument("--k", type=float, default=2.0, help="spike = mean + k * std")
+    parser.add_argument("--detector", choices=["seasonal", "rolling"], default="seasonal")
+    parser.add_argument("--k", type=float, default=None,
+                        help="spike = mean + k * spread (default 3 seasonal, 2 rolling)")
     parser.add_argument("--min-trips", type=int, default=5)
+    parser.add_argument("--no-lakehouse", action="store_true", help="skip the Iceberg sink (SQLite only)")
     parser.add_argument("--max-llm-calls", type=int, default=3, help="Gemini calls per micro-batch")
     parser.add_argument("--no-llm", action="store_true", help="never call Gemini")
     parser.add_argument("--until-idle", type=int, default=0,
@@ -116,8 +159,17 @@ def main(argv=None) -> int:
 
     data_dir = args.data_dir
     store = Store(data_dir / "stream.sqlite")
-    spark = build_spark()
+    lakehouse = not args.no_lakehouse
+    spark = build_spark(with_lakehouse=lakehouse)
     spark.sparkContext.setLogLevel("ERROR")
+    if lakehouse:
+        ensure_tables(spark)
+    if args.detector == "seasonal":
+        k = 3.0 if args.k is None else args.k
+        detector = SeasonalDetector(iceberg_source(warehouse_path()), k=k, min_trips=args.min_trips)
+    else:
+        k = 2.0 if args.k is None else args.k
+        detector = RollingDetector(k=k, min_trips=args.min_trips)
 
     kafka_df = (spark.readStream.format("kafka")
                 .option("kafka.bootstrap.servers", args.bootstrap)
@@ -127,12 +179,14 @@ def main(argv=None) -> int:
                 .load())
     query = (windowed_counts(kafka_df, args.watermark).writeStream
              .outputMode("append")
-             .foreachBatch(make_batch_handler(store, data_dir, args.k, args.min_trips, args.max_llm_calls))
+             .foreachBatch(make_batch_handler(store, data_dir, k, args.min_trips, args.max_llm_calls,
+                                              detector=detector, lakehouse=lakehouse))
              .option("checkpointLocation", str(data_dir / "checkpoints" / "zone_windows"))
              .trigger(processingTime=f"{args.trigger_seconds} seconds")
              .start())
     (data_dir / "stream_ready").write_text(str(time.time()))
-    print(f"streaming from {args.topic} @ {args.bootstrap} (watermark {args.watermark}, k={args.k})", flush=True)
+    print(f"streaming from {args.topic} @ {args.bootstrap} (watermark {args.watermark}, "
+          f"detector {detector.name}, k={k}, iceberg={'on' if lakehouse else 'off'})", flush=True)
 
     progress_log = data_dir / "stream_progress.jsonl"
     seen, idle_since = set(), time.time()
