@@ -14,3 +14,11 @@ data/*.tmp
 
 # OS metadata
 .DS_Store
+
+# Streaming v2 runtime state
+data/*.sqlite*
+data/*.jsonl
+data/checkpoints/
+data/stream_ready
+.pytest_cache/
+spark-warehouse/
