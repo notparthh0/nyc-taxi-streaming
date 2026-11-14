@@ -12,8 +12,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List
 
-from streaming.detector import detect_spikes
 from streaming.explain import _get_client, explain, fallback
+from streaming.seasonal import RollingDetector
 from streaming.store import TS_FORMAT, WINDOW, Store, now_ms
 
 ANOMALY_FEED_CAP = 100
@@ -25,10 +25,12 @@ def window_label(window_start: str) -> str:
 
 
 def process_batch(store: Store, rows: List[dict], batch_id: int, k: float = 2.0, min_trips: int = 5,
-                  max_llm_calls: int = 3, explain_fn: Callable = explain) -> Dict:
-    """Detect spikes and persist one micro-batch exactly once (see store.py)."""
+                  max_llm_calls: int = 3, explain_fn: Callable = explain, detector=None) -> Dict:
+    """Detect spikes and persist one micro-batch exactly once (see store.py).
+    detector: RollingDetector (default, the v1 rule) or SeasonalDetector (streaming/seasonal.py)."""
     if store.batch_done(batch_id):
         return {"batch_id": batch_id, "skipped": True}
+    detector = detector or RollingDetector(k=k, min_trips=min_trips)
 
     by_window = defaultdict(list)
     for row in rows:
@@ -40,8 +42,7 @@ def process_batch(store: Store, rows: List[dict], batch_id: int, k: float = 2.0,
         for window_start in sorted(by_window):  # oldest first: later windows see earlier ones as history
             window_rows = by_window[window_start]
             current = {r["zone"]: r["trips"] for r in window_rows}
-            history = store.history(datetime.strptime(window_start, TS_FORMAT), current.keys())
-            spikes = detect_spikes(current, history, k=k, min_trips=min_trips)
+            spikes = detector.detect(store, datetime.strptime(window_start, TS_FORMAT), current)
 
             store.upsert_windows(window_rows, batch_id, processed_at)
             label = window_label(window_start)
@@ -52,7 +53,7 @@ def process_batch(store: Store, rows: List[dict], batch_id: int, k: float = 2.0,
                     llm_calls += 1
                 else:
                     explanations[spike.zone] = fallback(spike, label)
-            store.upsert_anomalies(window_start, spikes, explanations)
+            store.upsert_anomalies(window_start, spikes, explanations, detector=detector.name)
             spikes_total += len(spikes)
         store.mark_batch(batch_id, len(by_window), len(rows), spikes_total)
 
