@@ -1,7 +1,15 @@
+# Streaming
+pyspark==3.5.1          # Spark Structured Streaming (the Kafka connector jar is fetched on first run)
 kafka-python-ng
 pandas
 pyarrow
+numpy
 python-dotenv
+
+# Explanations + dashboard
 google-genai
 streamlit
 streamlit-autorefresh
+
+# Tests
+pytest
