@@ -22,3 +22,4 @@ data/checkpoints/
 data/stream_ready
 .pytest_cache/
 spark-warehouse/
+data/*.log

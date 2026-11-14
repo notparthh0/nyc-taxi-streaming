@@ -10,7 +10,7 @@ from streaming.spark_stream import build_spark, windowed_counts  # noqa: E402
 
 @pytest.fixture(scope="module")
 def spark():
-    session = build_spark("windowing-tests", with_kafka=False)
+    session = build_spark("windowing-tests", with_kafka=False, with_lakehouse=False)
     session.sparkContext.setLogLevel("ERROR")
     yield session
     session.stop()
