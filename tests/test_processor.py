@@ -37,7 +37,7 @@ def test_warm_up_then_detects_a_spike(store, monkeypatch):
     assert result["anomalies"] == 1
     zone, trips, explanation = store.conn.execute("SELECT zone, trips, explanation FROM anomalies").fetchone()
     assert (zone, trips) == (132, 45)
-    assert "Zone 132 recorded 45 trips" in explanation  # factual fallback text when Gemini is off
+    assert explanation.startswith("JFK Airport (Queens): 45 pickups")  # factual fallback when Gemini is off
 
 
 def test_missing_windows_count_as_zero_in_history(store):

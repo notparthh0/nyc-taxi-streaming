@@ -9,7 +9,7 @@ RATE   ?= 1000
 SPIKES ?= 20
 KAFKA_TOPICS = docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092
 
-.PHONY: up down reset stream produce evaluate experiment dashboard test
+.PHONY: up down reset stream produce evaluate experiment dashboard test check-gemini
 
 up:                      ## start Kafka (KRaft, no ZooKeeper) and wait until healthy
 	docker compose up -d
@@ -39,6 +39,9 @@ experiment: reset        ## the full measured run: stream + replay + evaluation 
 	  $(MAKE) --no-print-directory produce; \
 	  wait; \
 	  $(MAKE) --no-print-directory evaluate
+
+check-gemini:            ## send the 3 biggest stored spikes to Gemini (3 API calls; needs GEMINI_API_KEY in .env)
+	$(PYTHON) evaluation/check_gemini.py
 
 dashboard:
 	streamlit run dashboard/app.py

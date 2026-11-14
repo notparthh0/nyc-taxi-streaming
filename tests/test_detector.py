@@ -37,3 +37,24 @@ def test_zone_without_history_is_skipped():
 def test_baseline_of_short_history():
     assert baseline([]) == (0.0, 0.0)
     assert baseline([4]) == (4.0, 0.0)
+
+
+def test_gemini_prompt_names_the_zone_and_strict_mode_reports_missing_key(monkeypatch):
+    import pytest
+    from streaming import explain as ex
+
+    spike = Spike(zone=132, trips=40, baseline_mean=10.0, baseline_std=3.0, threshold=19.0)
+    prompt = ex.build_prompt(spike, "2023-03-14 08:00 - 08:05")
+    assert "JFK Airport (Queens)" in prompt and "TLC zone 132" in prompt
+    assert ex.fallback(spike, "x").startswith("JFK Airport (Queens): 40 pickups")
+    monkeypatch.setattr(ex, "_client", None)
+    monkeypatch.setattr(ex, "_client_ready", True)
+    with pytest.raises(RuntimeError, match="GEMINI_API_KEY"):
+        ex.explain(spike, "x", strict=True)
+
+    class FakeModels:
+        def generate_content(self, model, contents, **kwargs):
+            return type("R", (), {"text": " Likely an arriving flight bank (hypothesis). "})()
+
+    monkeypatch.setattr(ex, "_client", type("C", (), {"models": FakeModels()})())
+    assert ex.explain(spike, "x", strict=True) == "Likely an arriving flight bank (hypothesis)."

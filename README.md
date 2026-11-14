@@ -41,7 +41,7 @@ flowchart LR
 | **Exactly-once results** | Kafka offsets and window state live in the Spark checkpoint. Each micro-batch is committed to SQLite in **one transaction with its batch id**, so a replayed batch is skipped. It is also **MERGEd into Iceberg keyed on (window_start, zone)**, so a replay changes nothing there either. |
 | **Spike rule (default)** | Seasonal: compare with the same zone, same 5-minute slot and same weekday over the previous 4 weeks of `lake.nyc.trips_cleaned`. Spike if `trips > mean + 3·max(std, √mean, 1)` and `trips ≥ 5`. The √mean term is the Poisson noise floor for small counts. |
 | **Baseline rule** | v1 rolling hour: `trips > mean + 2·std` of the zone's previous 12 windows (`--detector rolling`). |
-| **LLM cost** | At most 3 Gemini calls per micro-batch. Every failure falls back to a factual sentence, so the stream never waits on or breaks because of the API. |
+| **LLM** | Gemini (`gemini-3.5-flash-lite`) gets the zone's real name from the TLC lookup (e.g. "JFK Airport (Queens)") plus the observed and usual levels, and returns 1–2 sentences with causes labelled as hypotheses. It makes at most 3 calls per micro-batch, each with a 30 s timeout and no hidden retries. Any failure falls back to a factual sentence, so the stream never breaks because of the API. |
 
 ---
 
@@ -75,6 +75,8 @@ The restart run ended in exactly the same state as the clean run, in both sinks.
 - k = 4 is the best balance if missing 3 in 20 spikes is acceptable.
 - All of this is scored on injected labels. On real surges precision isn't measurable here, because no labels exist for them.
 
+**Gemini check** (`make check-gemini`, 14 Nov 2026): 3 of 3 calls succeeded on the three largest spikes of the run, in 1.2–14.3 s each. Answers are saved to `data/gemini_check.json`. Example, for Lincoln Square East (Manhattan) at 23:25 with 40 pickups against a usual 8: *"plausibly caused by the simultaneous letting out of a major performance at Lincoln Center or an unexpected late-night downpour"*. The larger flash models timed out (HTTP 504) for a new key, so the default is the lite model.
+
 An earlier run with the rolling rule only and no Iceberg sink (10 Jan 2023, 2,000 events/s) gave the same exactly-once result after a crash. In that run Spark processed about 11,800 rows/s.
 
 ---
@@ -88,7 +90,8 @@ pip install -r requirements.txt
 make up              # Kafka in Docker, waits until healthy
 make experiment      # fresh topic → Spark stream → replay 14 Mar 2023 at 1,000/s with 20 spikes → evaluation
 make dashboard       # http://localhost:8501
-make test            # 40 tests, no Kafka needed
+make test            # 41 tests, no Kafka needed
+make check-gemini    # 3 Gemini calls on the run's biggest spikes (needs GEMINI_API_KEY in .env)
 ```
 
 To run the pieces yourself: `make stream` in one terminal and `make produce RATE=2000 DAYS=0.5` in another. Set `GEMINI_API_KEY` in `.env` for AI-generated context on spikes.
@@ -107,7 +110,9 @@ streaming/seasonal.py         seasonal (default) and rolling-hour detectors; pro
 streaming/detector.py         the rolling-hour rule (pure Python)
 streaming/lakehouse.py        Iceberg catalog shared with the batch pipeline; MERGE sink
 streaming/store.py            SQLite store: exactly-once batch commits, zero-filled history
-streaming/explain.py          Gemini context with per-batch cap and fallback
+streaming/explain.py          Gemini context: zone names, timeout, per-batch cap, fallback
+evaluation/check_gemini.py    verifies the Gemini path on real spikes and saves the answers
+reference/taxi_zone_lookup.csv  official TLC zone names
 streaming/consumer.py         v1: the original single-process Python consumer, kept for comparison
 evaluation/evaluate.py        precision/recall/F1 per detector, latency, throughput
 dashboard/app.py              Streamlit dashboard (reads data/metrics.json + data/anomalies.json)
@@ -128,4 +133,5 @@ tests/                        detectors, store/processor (crash + replay), Icebe
 
   A rule with k = 3 needs about three times the usual spread.
 - The Iceberg catalog is a local folder (file-based). MinIO's official images could no longer be pulled when this was built (Nov 2026), so there is no local object store.
+- Gemini is called inside the micro-batch. One answer took 14 s in the check, and a slow answer delays that batch (never by more than the 30 s timeout). Moving explanations to a background worker would remove that.
 - This is single-node Kafka and local Spark. The design (keyed partitions, checkpointing, idempotent MERGE sink) carries over to a cluster, but I have only run it locally.
