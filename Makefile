@@ -1,10 +1,11 @@
-# Real-time layer. Needs Docker (Kafka) and the batch lake from ../nyc-taxi-aws (make month MONTH=2023-01 there).
+# Real-time layer. Needs Docker (Kafka) and the batch lakehouse from ../nyc-taxi-aws
+# (the replayed month plus the 4 weeks before it, e.g. make backfill MONTHS="2023-02 2023-03" there).
 PYTHON ?= python3
 TOPIC  ?= nyc-taxi-stream
-MONTH  ?= 2023-01
-START  ?= 2023-01-10
+MONTH  ?= 2023-03
+START  ?= 2023-03-14
 DAYS   ?= 1
-RATE   ?= 2000
+RATE   ?= 1000
 SPIKES ?= 20
 KAFKA_TOPICS = docker exec kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092
 
